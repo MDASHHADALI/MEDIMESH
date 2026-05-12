@@ -1,0 +1,120 @@
+/*
+ * MEDIMESH - NODE C (GATEWAY MESH RECEIVER + RGB ALARM)
+ * Hardware: ESP32 + Buzzer + RGB LED
+ * Features: painlessMesh RX, Color-Coded Alarms, UART TX to Node D
+ */
+
+#include <painlessMesh.h>
+#include <ArduinoJson.h>
+
+// --- MESH SETTINGS ---
+#define MESH_PREFIX   "MediMesh_Grid"
+#define MESH_PASSWORD "Emergency123"
+#define MESH_PORT     5555
+painlessMesh mesh;
+
+// --- HARDWARE PINS ---
+#define BUZZER_PIN 23  
+
+// --- RGB LED PINS ---
+#define RGB_R 25
+#define RGB_G 26
+#define RGB_B 27
+
+// --- UART PINS (Talking to Node D) ---
+#define RXD2 16
+#define TXD2 17
+
+// ==============================================================================
+// RGB HELPER FUNCTION
+// ==============================================================================
+// HIGH turns the color ON, LOW turns it OFF (For Common Cathode RGB)
+void setRGB(bool r, bool g, bool b) {
+  digitalWrite(RGB_R, r);
+  digitalWrite(RGB_G, g);
+  digitalWrite(RGB_B, b);
+}
+
+// ==============================================================================
+// MESH CALLBACK: WHEN A MESSAGE IS RECEIVED
+// ==============================================================================
+void receivedCallback(uint32_t from, String &msg) {
+  Serial.printf("Mesh RX: %s\n", msg.c_str());
+
+  DynamicJsonDocument doc(1024);
+  DeserializationError error = deserializeJson(doc, msg);
+  if (error) return;
+
+  String location = doc["loc"];
+  String type = doc["type"];
+
+  // 1. Send data over the wire to Node D
+  Serial2.println("ALERT:" + location + ":" + type);
+  Serial.println(">> Sent to Node D via wire: " + type);
+
+  // 2. Trigger local hardware alarm with specific Colors
+  triggerSmartAlarm(type);
+}
+
+// ==============================================================================
+// SMART ALARM LOGIC
+// ==============================================================================
+void triggerSmartAlarm(String alertType) {
+  setRGB(LOW, LOW, LOW); // Turn off normal Green LED first
+  
+  // Determine color based on the type of emergency
+  bool isScream = (alertType.indexOf("Scream") >= 0);
+  
+  // Flash 15 times
+  for (int i = 0; i < 15; i++) {
+    digitalWrite(BUZZER_PIN, HIGH);
+    
+    if (isScream) {
+      // RED Flashing for Screams
+      setRGB(HIGH, LOW, LOW); 
+    } else {
+      // YELLOW (Red + Green) Flashing for Falls/Thuds
+      setRGB(HIGH, HIGH, LOW); 
+    }
+    
+    delay(100);
+    
+    digitalWrite(BUZZER_PIN, LOW);
+    setRGB(LOW, LOW, LOW); // LED Off
+    delay(100);
+  }
+  
+  // Back to Normal State (Solid Green)
+  setRGB(LOW, HIGH, LOW);
+}
+
+// ==============================================================================
+// SETUP & LOOP
+// ==============================================================================
+void setup() {
+  Serial.begin(115200);
+  Serial2.begin(115200, SERIAL_8N1, RXD2, TXD2); // Connect to Node D
+
+  // Init Pins
+  pinMode(BUZZER_PIN, OUTPUT);
+  pinMode(RGB_R, OUTPUT);
+  pinMode(RGB_G, OUTPUT);
+  pinMode(RGB_B, OUTPUT);
+  
+  // Boot Sequence: Show Blue while starting up
+  setRGB(LOW, LOW, HIGH); 
+  delay(1000);
+
+  mesh.setDebugMsgTypes(ERROR | STARTUP);
+  mesh.init(MESH_PREFIX, MESH_PASSWORD, MESH_PORT);
+  mesh.onReceive(&receivedCallback);
+  
+  Serial.println("Node C (Mesh Receiver + RGB) Ready.");
+  
+  // System Armed: Solid Green
+  setRGB(LOW, HIGH, LOW); 
+}
+
+void loop() {
+  mesh.update(); // Keep mesh alive
+}
