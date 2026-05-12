@@ -1,0 +1,169 @@
+/*
+ * MEDIMESH - NODE D (BLUETOOTH & OLED TRANSMITTER)
+ * Hardware: ESP32 + 0.96" OLED
+ * Features: UART RX from Node C, Bluetooth TX to App, Smart OLED UI
+ */
+
+#include "BluetoothSerial.h"
+#include <Wire.h>
+#include <Adafruit_GFX.h>
+#include <Adafruit_SSD1306.h>
+
+#if !defined(CONFIG_BT_ENABLED) || !defined(CONFIG_BLUEDROID_ENABLED)
+#error Bluetooth is not enabled! Please run `make menuconfig` to and enable it
+#endif
+
+BluetoothSerial SerialBT;
+
+// --- UART PINS (Listening to Node C) ---
+#define RXD2 16
+#define TXD2 17
+
+// --- OLED SETTINGS ---
+#define SCREEN_WIDTH 128
+#define SCREEN_HEIGHT 64
+#define OLED_RESET    -1 
+Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
+
+// State tracking
+bool wasClientConnected = false;
+unsigned long alertClearTime = 0;
+bool isAlertActive = false;
+
+// ==============================================================================
+// SETUP
+// ==============================================================================
+void setup() {
+  Serial.begin(115200);
+  Serial2.begin(115200, SERIAL_8N1, RXD2, TXD2); // Listen to Node C
+
+  // Init Bluetooth (Matches Flutter App Filter)
+  SerialBT.begin("MediMesh_Hub"); 
+
+  // Init OLED (Address 0x3C is standard for 128x64)
+  if(!display.begin(SSD1306_SWITCHCAPVCC, 0x3C)) { 
+    Serial.println(F("SSD1306 allocation failed"));
+    for(;;); // Loop forever if screen fails
+  }
+
+  Serial.println("Node D (BT & OLED Hub) Ready. Waiting for Node C...");
+  showNormalStatus();
+}
+
+// ==============================================================================
+// MAIN LOOP
+// ==============================================================================
+void loop() {
+  // 1. Check if Node C sent data over the jumper wire
+  if (Serial2.available()) {
+    String incomingMsg = Serial2.readStringUntil('\n');
+    incomingMsg.trim(); 
+
+    // Format expected: "ALERT:Bathroom_102:Screaming"
+    if (incomingMsg.startsWith("ALERT:")) {
+      
+      // Split the string safely
+      int firstColon = incomingMsg.indexOf(':');
+      int secondColon = incomingMsg.indexOf(':', firstColon + 1);
+      
+      if (firstColon != -1 && secondColon != -1) {
+        String location = incomingMsg.substring(firstColon + 1, secondColon);
+        String type = incomingMsg.substring(secondColon + 1);
+        
+        Serial.println("UART RX -> Loc: " + location + " | Type: " + type);
+
+        // Send to Flutter App via Bluetooth
+        sendAlertToPhone(location, type);
+
+        // Update OLED with the new overlapping fix
+        isAlertActive = true;
+        alertClearTime = millis() + 5000; // Keep on screen for 5 seconds
+        showEmergencyScreen(location, type);
+      }
+    }
+  }
+
+  // 2. Update OLED dynamically if Phone connects/disconnects
+  bool isClientConnected = SerialBT.hasClient();
+  if (isClientConnected != wasClientConnected) {
+    wasClientConnected = isClientConnected;
+    if (!isAlertActive) showNormalStatus(); 
+  }
+
+  // 3. Clear OLED alert after 5 seconds automatically
+  if (isAlertActive && millis() > alertClearTime) {
+    isAlertActive = false;
+    showNormalStatus();
+  }
+}
+
+// ==============================================================================
+// BLUETOOTH TX FUNCTION
+// ==============================================================================
+void sendAlertToPhone(String location, String type) {
+  if (SerialBT.hasClient()) {
+    SerialBT.println("=== EMERGENCY DETECTED ===");
+    SerialBT.println("Location: " + location);
+    SerialBT.println("Type: " + type);
+    SerialBT.println("--------------------------"); // Flushes the app buffer
+    Serial.println("Sent to App.");
+  } else {
+    Serial.println("No phone connected. BT Alert dropped.");
+  }
+}
+
+// ==============================================================================
+// OLED UI FUNCTIONS
+// ==============================================================================
+void showNormalStatus() {
+  display.clearDisplay();
+  
+  // Header
+  display.setTextSize(1);
+  display.setTextColor(SSD1306_WHITE);
+  display.setCursor(15, 0);
+  display.println("MediMesh Gateway");
+  display.drawLine(0, 10, 128, 10, SSD1306_WHITE);
+  
+  // Connection Statuses
+  display.setCursor(0, 25);
+  display.print("Node C: ");
+  display.println("LINKED");
+  
+  display.setCursor(0, 45);
+  display.print("App BT: ");
+  display.println(SerialBT.hasClient() ? "CONNECTED" : "WAITING...");
+  
+  display.display();
+}
+
+void showEmergencyScreen(String location, String type) {
+  display.clearDisplay();
+  
+  // 1. Draw a solid white warning banner at the top
+  display.fillRect(0, 0, 128, 14, SSD1306_WHITE); 
+  
+  // 2. Put SMALLER black text inside the white banner
+  display.setTextSize(1); 
+  display.setTextColor(SSD1306_BLACK); 
+  display.setCursor(38, 3); // Centered perfectly
+  display.println("! ALERT !"); 
+  
+  // Reset text color to white for the details
+  display.setTextColor(SSD1306_WHITE);
+  
+  // 3. Location Details (Safely spaced out)
+  display.setCursor(0, 22);
+  display.print("LOC: "); 
+  display.println(location); 
+  
+  // 4. Clean Divider Line
+  display.drawLine(0, 34, 128, 34, SSD1306_WHITE);
+  
+  // 5. Emergency Type
+  display.setCursor(0, 42);
+  display.print("TYP: "); 
+  display.println(type);
+  
+  display.display();
+}
