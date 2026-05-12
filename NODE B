@@ -1,0 +1,100 @@
+/*
+ * MEDIMESH - SENDER NODE "B" (MESH COMMUNICATOR)
+ * Hardware: ESP32 + LEDs
+ * Features: UART RX from Node A, painlessMesh Broadcasting
+ */
+
+#include <painlessMesh.h>
+
+// --- MESH NETWORK SETTINGS ---
+#define MESH_PREFIX   "MediMesh_Grid"
+#define MESH_PASSWORD "Emergency123"
+#define MESH_PORT     5555
+painlessMesh mesh;
+
+// --- HARDWARE PINS ---
+#define LED_RED      13
+#define LED_GREEN    12
+
+// --- UART PINS (Listening to ESP32 "A") ---
+// RX2 (Pin 16) on this board connects to TX2 (Pin 17) on Board A
+#define RXD2 16
+#define TXD2 17
+
+// ==============================================================================
+// SETUP
+// ==============================================================================
+void setup() {
+  Serial.begin(115200); // For PC Debugging
+  
+  // Initialize UART to listen to ESP32 "A"
+  Serial2.begin(115200, SERIAL_8N1, RXD2, TXD2); 
+
+  // Setup Visual Feedback LEDs
+  pinMode(LED_RED, OUTPUT);
+  pinMode(LED_GREEN, OUTPUT);
+  digitalWrite(LED_GREEN, HIGH); // Green ON means system is armed
+  digitalWrite(LED_RED, LOW);
+
+  // Initialize the Mesh Network
+  // Setting debug level to ERROR to keep the serial monitor clean
+  mesh.setDebugMsgTypes(ERROR | STARTUP);
+  mesh.init(MESH_PREFIX, MESH_PASSWORD, MESH_PORT);
+  
+  Serial.println("=========================================");
+  Serial.println("MediMesh: COMMUNICATOR NODE READY");
+  Serial.println("Waiting for alerts from AI Brain...");
+  Serial.println("=========================================");
+}
+
+// ==============================================================================
+// MAIN LOOP
+// ==============================================================================
+void loop() {
+  // 1. Keep the Mesh Network alive and healthy (Crucial!)
+  mesh.update(); 
+
+  // 2. Check if ESP32 "A" sent an alert over the jumper wire
+  if (Serial2.available()) {
+    // Read the incoming message
+    String incomingMsg = Serial2.readStringUntil('\n');
+    incomingMsg.trim(); // Clean up any invisible newline/return characters
+
+    // 3. Verify it's an actual alert message
+    if (incomingMsg.startsWith("ALERT:")) {
+      
+      // Extract the emergency type (e.g., "Screaming" or "Thud")
+      // substring(6) skips the "ALERT:" part
+      String alertType = incomingMsg.substring(6); 
+      
+      Serial.println("\n[UART RX] Received alert from AI Brain: " + alertType);
+      
+      // 4. Broadcast it to the mesh network
+      triggerEmergency(alertType);
+    }
+  }
+}
+
+// ==============================================================================
+// EMERGENCY BROADCAST
+// ==============================================================================
+void triggerEmergency(String alertType) {
+  // Visual Feedback: Green OFF, Red ON
+  digitalWrite(LED_GREEN, LOW);
+  digitalWrite(LED_RED, HIGH);
+  
+  // Construct the JSON payload required by the Flutter App & Gateway
+  String payload = "{\"loc\":\"Room_101\", \"type\":\"" + alertType + "\"}";
+  
+  // Broadcast to all nodes (Node C and Node D will hear this)
+  mesh.sendBroadcast(payload);
+  Serial.println(">> MESH BROADCAST SENT: " + payload);
+  
+  // Keep the red LED on for 3 seconds so nurses/admins can see it locally
+  delay(3000); 
+  
+  // Reset LEDs back to armed state
+  digitalWrite(LED_RED, LOW);
+  digitalWrite(LED_GREEN, HIGH);
+  Serial.println("System reset. Resuming monitoring...");
+}
